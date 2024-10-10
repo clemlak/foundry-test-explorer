@@ -2,6 +2,9 @@
 // Import the module and reference it with the alias vscode in your code below
 import * as vscode from 'vscode';
 import path from 'path';
+import { promisify } from 'util';
+import { exec } from 'node:child_process';
+const execPromise = promisify(exec);
 
 // This method is called when your extension is activated
 // Your extension is activated the very first time the command is executed
@@ -14,6 +17,13 @@ export function activate(context: vscode.ExtensionContext) {
   vscode.workspace.onDidCreateFiles(() => discoverTests(testController));
   vscode.workspace.onDidDeleteFiles(() => discoverTests(testController));
   vscode.workspace.onDidSaveTextDocument(() => discoverTests(testController));
+
+  testController.createRunProfile(
+    'Run tests',
+    vscode.TestRunProfileKind.Run,
+    async (request, token) => runHandler(testController, request, token),
+    true
+  );
 
   discoverTests(testController);
 
@@ -31,6 +41,8 @@ export function activate(context: vscode.ExtensionContext) {
   });
 
   context.subscriptions.push(disposable);
+
+  vscode.commands.executeCommand("foundrytestexplorer.helloWorld");
 }
 
 // This method is called when your extension is deactivated
@@ -73,4 +85,42 @@ function findTestFunctions(document: vscode.TextDocument): { name: string, range
   }
 
   return testFunctions;
+}
+
+async function runHandler(controller: vscode.TestController, request: vscode.TestRunRequest, token: vscode.CancellationToken) {
+  const run = controller.createTestRun(request);
+
+  if (request.include) {
+    for (const test of request.include) {
+      await runTestItem(test, run);
+
+      if (token.isCancellationRequested) break;
+    }
+  }
+
+  run.end();
+}
+
+async function runTestItem(test: vscode.TestItem, run: vscode.TestRun) {
+  const testFilePath = test.uri?.fsPath;
+  const testFunctionName = test.id;
+
+  run.started(test);
+
+  if (testFilePath && testFunctionName) {
+    try {
+      const { stdout, stderr } = await execPromise(`forge test --match-test ${testFunctionName}`, { cwd: vscode.workspace.rootPath });
+
+      if (stderr) {
+        console.log("Test failed");
+        run.failed(test, new vscode.TestMessage(`${stderr}`));
+      } else {
+        run.passed(test);
+      }
+    } catch (e: any) {
+      run.failed(test, new vscode.TestMessage(e.stdout.split('[')[1].split(']')[0]));
+    }
+  } else {
+    run.failed(test, new vscode.TestMessage("Test not found"));
+  }
 }
